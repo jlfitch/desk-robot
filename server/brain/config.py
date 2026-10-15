@@ -20,6 +20,82 @@ if _ENV_FILE.is_file():
 # The robot's name — the wake word is "hey <name>".
 ROBOT_NAME = "Rocky"
 
+# ── Desktop version (mac/ app + this server, no hardware) ────────────────────
+# BRAIN picks who answers:
+#   "claude-code"  a long-lived `claude -p` process (brain/claude_brain.py). Uses
+#                  your Claude Code login, keeps its own memory of the chat, and
+#                  can use tools: no API key needed. The default here.
+#   "api"          the upstream path: the chat API at LLM_BASE_URL with LLM_API_KEY.
+BRAIN = "claude-code"
+PERSONALITY = "rocky"            # "helper" (brief, useful) or "rocky" (the original character)
+CLAUDE_MODEL = "haiku"            # alias or full id; haiku answers in ~1-3 s
+CLAUDE_SMART_MODEL = "sonnet"     # used automatically for research, writing, planning (see claude_brain.route_model)
+CLAUDE_SMART_STICKY_TURNS = 3     # follow-ups after a smart turn stay on the smart model...
+CLAUDE_SMART_STICKY_SECONDS = 600 # ...for this many turns or this long
+NOTE_LONG_REPLIES = True          # when a reply runs past REPLY_MAX_SENTENCES, the whole
+                                  # answer is written to a fleeting note and he says so
+CLAUDE_BIN = ""                   # leave empty to find `claude` on PATH / nvm
+CLAUDE_WORKSPACE = "~/desk-robot/workspace"   # cwd for the process; its CLAUDE.md tells it the job
+# Extra Claude Code flags. Tools listed in --allowedTools run without asking;
+# everything else is refused (print mode never prompts). --add-dir widens what it may read.
+# Where your notes live (optional). Set VAULT_PATH in server/.env to an
+# Obsidian vault or any folder; the robot may then read it and write only to
+# the subfolders named in NOTES_* below. Empty = no vault.
+VAULT_PATH = os.environ.get("VAULT_PATH", "")
+MEMORY_DIR = os.environ.get("MEMORY_DIR", "~/desk-robot/workspace/memory")   # the memory folder (see workspace/memory-template)
+NOTES_INBOX = os.environ.get("NOTES_INBOX", "~/desk-robot/workspace/notes")  # where long answers are written as notes
+# Subfolders of the vault he may write to (vault-relative; used only when VAULT_PATH is set).
+VAULT_WRITE_DIRS = ["7. Fleeting Notes", "5. Journals/01 Daily Notes"]
+VAULT_WRITE_FILES = ["1. Areas/Personal/Active Todos.md"]
+_WS = os.path.expanduser("~/desk-robot/workspace")
+
+
+def _claude_args() -> list[str]:
+    """Each permission rule is its own argument (paths can contain spaces)."""
+    args = [
+        "--allowedTools",
+        "Read", "Glob", "Grep", "WebSearch", "WebFetch",
+        "Bash(date:*)", "Bash(ls:*)", "Bash(cal:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
+    ]
+    for tool in ["agenda", "agents", "code", "reflect"] + list(EXTRA_TOOLS):
+        args += [f"Bash(tools/{tool}:*)", f"Bash({_WS}/tools/{tool}:*)"]
+    # The only places he may write: memory, his notes inbox, and the vault folders above.
+    for d in [MEMORY_DIR, NOTES_INBOX]:
+        full = os.path.expanduser(d)
+        args += [f"Write(/{full}/**)", f"Edit(/{full}/**)"]
+    args += ["Write(memory/**)", "Edit(memory/**)", "Write(notes/**)", "Edit(notes/**)"]
+    if VAULT_PATH:
+        v = os.path.expanduser(VAULT_PATH)
+        for d in VAULT_WRITE_DIRS:
+            args += [f"Write(/{v}/{d}/**)", f"Edit(/{v}/{d}/**)"]
+        for f in VAULT_WRITE_FILES:
+            args += [f"Edit(/{v}/{f})"]
+        args += ["--add-dir", v]
+    # The allowlist is a prompt-free list, not a sandbox: `date; cat file` passes
+    # Bash(date:*). Print mode refuses any tool call not on the list, so Write
+    # and Edit outside those folders are refused; the two below stay off.
+    args += ["--disallowedTools", "MultiEdit", "NotebookEdit"]
+    return args
+
+
+# Extra tools of your own in workspace/tools (names), allowed the same way.
+# Set in server/settings.json as "EXTRA_TOOLS": ["jk", "swk"].
+EXTRA_TOOLS: list[str] = []
+# Names the speech-to-text should know (people, companies, places); also in settings.json.
+VOCABULARY: list[str] = []
+CLAUDE_TURN_TIMEOUT = 120.0       # seconds before a stuck turn is cut off
+JOURNAL_DIR = "~/desk-robot/workspace/journal"   # one file a day of real exchanges (for the nightly reflection)
+# Ears (desktop): the Mac app streams the microphone with echo cancellation, so
+# he can keep listening while he talks and you can cut him off.
+BARGE_IN = True
+BARGE_IN_MIN_SPEECH = 0.6         # seconds of your speech that stops him mid-sentence (residual echo is shorter)
+# While awake, an utterance without his name is checked: "was that said to the
+# robot, or to someone else in the room?" (TypeSafe Jev; TYPESAFE_API_KEY in .env).
+ADDRESSED_CHECK = True
+ADDRESSED_THRESHOLD = 0.5         # probability below which he stays quiet
+CLAUDE_RECYCLE_TURNS = 80         # start a fresh conversation after this many turns...
+CLAUDE_RECYCLE_SECONDS = 8 * 3600 # ...or this long, so context never bloats
+
 # Your name — Rocky calls you this. Set HUMAN_NAME in server/.env so it
 # stays out of the repo; "friend" until you do.
 HUMAN_NAME = os.environ.get("HUMAN_NAME", "friend")
@@ -70,13 +146,13 @@ PORT = 8765
 TTS_VOICE_ID = "6dd07916890445e59c5f019ad0fc7879"
 TTS_TEMPERATURE = 0.4
 TTS_TOP_P = 0.6
-REPLY_MAX_SENTENCES = 3
+REPLY_MAX_SENTENCES = 4
 TTS_LEVEL = 0.12
 TTS_HIGHPASS_HZ = 0.0
 TTS_PRESENCE_DB = 0.0
 
 # Text-to-speech. The voice comes from Fish Audio (TTS_VOICE_ID above).
-TTS_FALLBACK_VOICE = "Fred"  # built-in voice used until Fish Audio is set up: a macOS `say`
+TTS_FALLBACK_VOICE = "Samantha"  # built-in voice used until Fish Audio is set up: a macOS `say`
                              # voice name (`say -v ?` lists them); Windows and Linux use their default
 # Loudness. Fish's level wanders from line to line, so the audio goes through
 # an automatic gain control (mouth.Leveler) that holds it near TTS_LEVEL
@@ -165,7 +241,7 @@ EMOTIONS = [
 CAMERA_FPS = 10
 LIVE_VIEW_PORT = 8766
 LIVE_VIEW_BIND = "127.0.0.1"  # this computer only. "0.0.0.0" would show the camera to the whole LAN.
-SEND_CAMERA_TO_BRAIN = True  # let Rocky see the camera when a question is about seeing
+SEND_CAMERA_TO_BRAIN = False  # let Rocky see the camera when a question is about seeing
 # A frame is attached only when the question is about seeing (any of these
 # words or phrases). Everyday words like "this", "that", "here", "there" and
 # "right" are deliberately NOT in the list: they made him describe the room
@@ -184,8 +260,8 @@ CAMERA_WORDS = [
 # Off until you ask ("Rocky, track me"); phrases below switch it without a
 # brain call, and Rocky can also switch it himself when asked in other words.
 TRACKING = False
-TRACK_ON_PHRASES = ["track me", "follow me", "watch me", "keep your eyes on me", "look at me"]
-TRACK_OFF_PHRASES = ["stop tracking", "stop following", "stop watching", "stop looking at me"]
+TRACK_ON_PHRASES = []   # no head on the desktop version: let "look at me" reach the brain
+TRACK_OFF_PHRASES = []
 # What he says when tracking starts/stops: personality.py, LINES.
 TRACK_HFOV = 62.0          # camera field of view, degrees (OV2640 stock lens)
 TRACK_VFOV = 48.0
@@ -200,3 +276,59 @@ TRACK_LOST_SECONDS = 4.0   # no face this long → idle glances resume
 
 # How many conversation turns to remember before forgetting the oldest.
 MAX_HISTORY_TURNS = 20
+
+# ── Settings overlay ─────────────────────────────────────────────────────────
+# server/settings.json holds the knobs the Mac app's Settings window changes
+# (listening, voice, awake time, model, personality...). It is read last so it
+# wins over the values above, and saved by main.py whenever a control changes.
+SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
+SETTINGS_KEYS = [
+    "ROBOT_NAME", "PERSONALITY", "CLAUDE_MODEL", "CLAUDE_SMART_MODEL", "REPLY_MAX_SENTENCES",
+    "NOTE_LONG_REPLIES", "TTS_FALLBACK_VOICE", "TTS_LEVEL", "TTS_HIGHPASS_HZ", "TTS_PRESENCE_DB",
+    "VAD_THRESHOLD", "TURN_THRESHOLD", "TURN_MAX_SILENCE", "TURN_PAUSE_SECONDS", "AWAKE_SECONDS",
+    "LISTEN_ON_START", "STT_MODEL", "BARGE_IN", "BARGE_IN_MIN_SPEECH", "ADDRESSED_CHECK", "ADDRESSED_THRESHOLD",
+    "EXTRA_TOOLS", "VOCABULARY",
+]
+
+
+def load_settings() -> dict:
+    import json
+    try:
+        data = json.loads(SETTINGS_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    applied = {}
+    for k, v in data.items():
+        if k in SETTINGS_KEYS and k in globals():
+            kind = type(globals()[k])
+            try:
+                if kind is list:
+                    globals()[k] = [str(x) for x in v] if isinstance(v, list) else globals()[k]
+                else:
+                    globals()[k] = kind(v) if kind in (int, float, str) else (bool(v) if kind is bool else v)
+                applied[k] = globals()[k]
+            except (TypeError, ValueError):
+                pass
+    return applied
+
+
+def save_setting(key: str, value) -> None:
+    """Persist one knob so it survives a restart."""
+    import json
+    if key not in SETTINGS_KEYS:
+        raise ValueError(f"not a saved setting: {key}")
+    try:
+        data = json.loads(SETTINGS_FILE.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data[key] = value
+    SETTINGS_FILE.write_text(json.dumps(data, indent=2) + "\n")
+    globals()[key] = value
+
+
+_applied = load_settings()
+CLAUDE_ARGS = _claude_args()
+if _applied:
+    _SLEEP_NAME = ROBOT_NAME.lower()
+    SLEEP_PHRASES = [f"{_SLEEP_NAME} sleep", f"{_SLEEP_NAME} go to sleep", "go to sleep", "goodnight", "good night", "stop listening"]
+    STT_PROMPT = f"Hey {ROBOT_NAME}. {ROBOT_NAME} is a robot."

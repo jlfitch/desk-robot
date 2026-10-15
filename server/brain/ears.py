@@ -276,6 +276,7 @@ class Ears:
         self.device_name = "?"
         self.mac_error: str | None = None  # why the Mac mic could not be opened, if it couldn't
         self.muted = threading.Event()  # set while Rocky is talking (no echo cancel)
+        self.frames = 0                 # robot mic frames received (diagnostic)
         self.source = "mac"             # "mac" or "robot": whose audio is live
         self.level = 0.0                # RMS of the latest live block (for `mic`)
         self._blocks: queue.Queue[np.ndarray | None] = queue.Queue()
@@ -314,6 +315,7 @@ class Ears:
         block = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         block = self._highpass.process(block)
         self.level = float(np.sqrt(np.mean(block * block)))
+        self.frames += 1
         self._blocks.put(block)
 
     def start(self) -> str:

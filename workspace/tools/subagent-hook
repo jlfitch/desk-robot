@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Claude Code hook: tell Rocky when one of his sub-agents (a Claude Code
+session in a terminal) finishes a turn or needs attention.
+
+Wired in ~/.claude/settings.json as a Stop and Notification hook. Reads the
+hook payload on stdin, posts a one-liner to the brain's local API, and never
+blocks the session (one-second timeout, always exits 0).
+"""
+import json, os, sys, urllib.request
+
+HOME = os.path.expanduser("~")
+ROCKY_WS = os.path.join(HOME, "desk-robot", "workspace")
+SKIP_CWDS = {ROCKY_WS, os.path.join(HOME, "desk-robot")}   # Rocky's own brain is not a sub-agent
+
+
+def gist(transcript_path: str) -> str:
+    """First sentence of the session's last assistant message, short."""
+    try:
+        size = os.path.getsize(transcript_path)
+        with open(transcript_path, "rb") as f:
+            f.seek(max(0, size - 400_000))
+            chunk = f.read().decode("utf-8", "replace")
+        last = ""
+        for line in chunk.split("\n")[1:]:
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("type") != "assistant":
+                continue
+            c = (d.get("message") or {}).get("content")
+            if isinstance(c, list):
+                c = " ".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+            c = " ".join(str(c or "").split())
+            if c:
+                last = c
+        if not last:
+            return ""
+        # strip markdown-ish noise, keep the first sentence, cap the words
+        for ch in "*`#_>":
+            last = last.replace(ch, "")
+        parts = [x.strip() for x in last.split(". ") if x.strip()]
+        first = parts[0]
+        if len(first.split()) < 4 and len(parts) > 1:   # "Done." alone says nothing
+            first = first.rstrip(".") + ". " + parts[1]
+        words = first.split()
+        return " ".join(words[:22]) + ("…" if len(words) > 22 else "")
+    except Exception:
+        return ""
+
+
+def main() -> None:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return
+    cwd = os.path.realpath(payload.get("cwd") or os.getcwd())
+    if cwd in SKIP_CWDS or cwd.startswith(ROCKY_WS):
+        return
+    project = os.path.basename(cwd.rstrip("/")) or "home"
+    if cwd == HOME:
+        project = "home folder"
+    event = payload.get("hook_event_name") or ""
+    kind, text = "", ""
+    if event == "Stop":
+        if payload.get("stop_hook_active"):
+            return
+        g = gist(payload.get("transcript_path") or "")
+        kind = "done"
+        text = f"The {project} agent is done." + (f" It says: {g}" if g else "")
+    elif event == "Notification":
+        ntype = payload.get("notification_type") or ""
+        msg = " ".join(str(payload.get("message") or "").split())
+        if ntype in ("idle_prompt", "idle"):
+            return
+        kind = "attention"
+        if ntype == "permission_prompt":
+            text = f"The {project} agent needs your okay" + (f": {msg[:120]}" if msg else ".")
+        else:
+            text = f"The {project} agent says: {msg[:160]}" if msg else f"The {project} agent needs you."
+    else:
+        return
+    body = json.dumps({"text": text, "kind": kind, "project": project, "session": (payload.get("session_id") or "")[:8]}).encode()
+    req = urllib.request.Request("http://127.0.0.1:8766/api/notify", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("X-Rocky-Console", "1")
+    try:
+        urllib.request.urlopen(req, timeout=1.5).read()
+    except Exception:
+        pass  # Rocky is off; the session must not care
+
+
+if __name__ == "__main__":
+    main()

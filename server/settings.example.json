@@ -1,0 +1,13 @@
+{
+  "ROBOT_NAME": "Rocky",
+  "PERSONALITY": "helper",
+  "CLAUDE_MODEL": "haiku",
+  "CLAUDE_SMART_MODEL": "sonnet",
+  "REPLY_MAX_SENTENCES": 4,
+  "AWAKE_SECONDS": 60,
+  "BARGE_IN": true,
+  "ADDRESSED_CHECK": true,
+  "ADDRESSED_THRESHOLD": 0.5,
+  "EXTRA_TOOLS": [],
+  "VOCABULARY": ["names the speech-to-text should know", "your company", "your town"]
+}

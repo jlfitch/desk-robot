@@ -34,3 +34,26 @@ docs/cad/
 
 # Codex CLI project config (written by the Fusion MCP add-in)
 .codex/
+
+# ── Desktop version (mac/ + Claude Code brain): personal and generated files ──
+server/settings.json
+server/logs/
+server/debug/
+workspace/journal/
+workspace/notes/
+workspace/memory
+workspace/memory/
+workspace/CLAUDE.local.md
+workspace/.claude/
+workspace/tools/agenda
+workspace/tools/.shadowfax-thread
+# the author's own tools (his CRM, store, second assistant); keep yours here too
+workspace/tools/jk
+workspace/tools/swk
+workspace/tools/ask-shadowfax
+workspace/tools/shadowfax-remote-tail.py
+workspace/tools/vault-search
+workspace/tools/sync-shared-memory.sh
+mac/build/
+mac/DeskRobot.xcodeproj/
+mac/*.xcworkspace

@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Rocky's coding sub-agents: Claude Code sessions he can start, continue and watch.
+
+    tools/code sessions                          every Claude Code session on this Mac: name, project, status
+    tools/code start "kinfig" "fix the typecheck error in apps/web" [--yes]
+                                                 a new background session in that project folder
+    tools/code continue "kinfig" "now run the tests" [--yes]
+                                                 continue an existing session (by project or name) in the background
+    tools/code logs "kinfig"                     recent terminal output of a session
+    tools/code stop "kinfig" [--yes]             stop a background session
+Without --yes, start/continue/stop print what would happen and refuse; the human
+must say yes first. A background session reports back through the Stop hook, so
+the robot announces when it is done; the human can open it in a terminal with
+`claude attach <name>`.
+"""
+import glob, json, os, re, subprocess, sys
+
+HOME = os.path.expanduser("~")
+CLAUDE = None
+for cand in (subprocess.run(["bash", "-lc", "command -v claude"], capture_output=True, text=True).stdout.strip(),
+             *sorted(glob.glob(HOME + "/.nvm/versions/node/*/bin/claude"))):
+    if cand and os.path.exists(cand):
+        CLAUDE = cand
+        break
+ENV = dict(os.environ)
+if CLAUDE:
+    ENV["PATH"] = os.path.dirname(CLAUDE) + ":" + ENV.get("PATH", "/usr/bin:/bin")
+ENV.pop("CLAUDECODE", None)
+KNOWN: list[str] = []   # optional: folder names to prefer when several match
+SKIP = {HOME + "/desk-robot/workspace"}
+
+
+def run(args, cwd=None, timeout=30):
+    return subprocess.run([CLAUDE, *args], cwd=cwd, env=ENV, capture_output=True, text=True, timeout=timeout)
+
+
+def sessions():
+    try:
+        out = run(["agents", "--json"]).stdout
+        return [s for s in json.loads(out or "[]") if s.get("cwd") not in SKIP]
+    except Exception:
+        return []
+
+
+def label(s):
+    proj = os.path.basename((s.get("cwd") or "").rstrip("/")) or "home"
+    if s.get("cwd") == HOME:
+        proj = "home folder"
+    return f"{s.get('name') or s.get('sessionId', '')[:8]} — {proj} — {s.get('kind')} — {s.get('status')}"
+
+
+def find_session(name):
+    name = name.lower()
+    hits = [s for s in sessions() if name in (s.get("name") or "").lower() or name in os.path.basename(s.get("cwd") or "").lower()]
+    return hits
+
+
+def find_project(name):
+    name = name.lower().strip()
+    cands = []
+    for d in sorted(os.listdir(HOME)):
+        p = os.path.join(HOME, d)
+        if os.path.isdir(p) and not d.startswith(".") and name in d.lower():
+            cands.append(p)
+    exact = [c for c in cands if os.path.basename(c).lower() == name]
+    if exact:
+        return exact[0], None
+    known = [c for c in cands if os.path.basename(c) in KNOWN]
+    if len(known) == 1:
+        return known[0], None
+    if len(cands) == 1:
+        return cands[0], None
+    if not cands:
+        return None, f"No project folder matching '{name}' in {HOME}. Ask which folder."
+    return None, "'" + name + "' matches several folders: " + ", ".join(os.path.basename(c) for c in cands[:6]) + ". Ask which."
+
+
+def trust(project):
+    """Claude Code asks once per folder whether to trust it; a background session
+    cannot answer. the human just said yes to running an agent there, so record the
+    trust the way the dialog would (projects.<path>.hasTrustDialogAccepted)."""
+    cfg = os.path.join(HOME, ".claude.json")
+    try:
+        d = json.load(open(cfg))
+    except Exception:
+        return
+    entry = d.setdefault("projects", {}).setdefault(project, {})
+    if entry.get("hasTrustDialogAccepted"):
+        return
+    entry["hasTrustDialogAccepted"] = True
+    tmp = cfg + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2)
+    os.replace(tmp, cfg)
+
+
+def gate(args, describe):
+    if "--yes" not in args:
+        print("WOULD DO: " + describe)
+        print("Not done. Ask your human to confirm, then run the same command with --yes.")
+        return False
+    return True
+
+
+def main():
+    a = sys.argv[1:]
+    if not a or not CLAUDE:
+        print(__doc__ if CLAUDE else "claude is not installed"); return 2
+    cmd = a[0]
+    rest = [x for x in a[1:] if x != "--yes"]
+    if cmd == "sessions":
+        ss = sessions()
+        if not ss:
+            print("No Claude Code sessions are running."); return 0
+        for s in ss:
+            print("- " + label(s))
+        return 0
+    if cmd == "logs":
+        hits = find_session(rest[0] if rest else "")
+        if not hits:
+            print("No session matching that."); return 2
+        r = run(["logs", hits[0].get("name") or hits[0]["sessionId"]])
+        print((r.stdout or r.stderr).strip()[-1500:] or "(no output yet)"); return 0
+    if cmd == "start":
+        if len(rest) < 2:
+            print("Need a project and a task."); return 2
+        proj, why = find_project(rest[0])
+        if not proj:
+            print(why); return 2
+        task = " ".join(rest[1:]).strip()
+        if not gate(a, f"start a coding session in {os.path.basename(proj)} with the task: \"{task}\""):
+            return 3
+        prompt = f"Your human asked for this by voice through their desk robot. Do it, then end with a one-sentence summary he can hear.\n\n{task}"
+        trust(proj)
+        r = run(["--bg", "--permission-mode", "auto", prompt], cwd=proj, timeout=60)
+        out = (r.stdout + r.stderr).strip()
+        print(f"Started in {os.path.basename(proj)}: {out[-300:] or 'running'}. Rocky will announce when it is done; `claude attach` opens it.")
+        return 0 if r.returncode == 0 else 1
+    if cmd == "continue":
+        if len(rest) < 2:
+            print("Need a session and a task."); return 2
+        hits = find_session(rest[0])
+        if not hits:
+            print(f"No session matching '{rest[0]}'. tools/code sessions lists them."); return 2
+        if len(hits) > 1:
+            print("Several sessions match: " + "; ".join(label(h) for h in hits) + ". Ask which."); return 2
+        s = hits[0]
+        task = " ".join(rest[1:]).strip()
+        if not gate(a, f"continue session {label(s)} with: \"{task}\""):
+            return 3
+        prompt = f"Your human asked for this by voice through their desk robot. Do it, then end with a one-sentence summary he can hear.\n\n{task}"
+        r = run(["--bg", "--resume", s["sessionId"], "--permission-mode", "auto", prompt], cwd=s.get("cwd") or HOME, timeout=60)
+        out = (r.stdout + r.stderr).strip()
+        print(f"Continuing {label(s)}: {out[-300:] or 'running'}. Rocky will announce when it is done.")
+        return 0 if r.returncode == 0 else 1
+    if cmd == "stop":
+        hits = find_session(rest[0] if rest else "")
+        if len(hits) != 1:
+            print("Name exactly one session (tools/code sessions)."); return 2
+        s = hits[0]
+        if not gate(a, f"stop session {label(s)}"):
+            return 3
+        r = run(["stop", s["sessionId"]])
+        print((r.stdout + r.stderr).strip() or "stopped"); return 0
+    print(__doc__); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

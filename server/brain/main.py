@@ -43,6 +43,7 @@ import time
 import websockets
 
 from . import config, mouth, personality
+from .addressed import addressed as _addressed
 from .thinking import Interrupted, RobotBrain
 from .ears import Ears, normalize, strip_wake_word
 from .eyes import Eyes
@@ -55,7 +56,12 @@ ears: Ears | None = None
 heard: asyncio.Queue[tuple[str, float, float, float]] = asyncio.Queue()
 speech_started = asyncio.Event()  # the human began a new turn (set by the ears)
 awake_until = 0.0  # while time.time() < this, he's awake: no wake word needed
+last_exchange = {"q": "", "a": "", "at": 0.0, "cut": False}  # for the "was that for me?" check
 robot_speak_done = asyncio.Event()  # robot finished playing the last reply
+robot_aec = False     # the connected body cancels its own echo (the Mac app), so ears stay open while he talks
+speaking_now = False  # a reply is playing right now
+current_reply = None  # the SpokenReply being spoken (its sentences feed the app's speech bubble)
+stop_requested = asyncio.Event()  # "stop talking" from the app, the console or the API
 eyes = Eyes()
 head_moves: asyncio.Queue[tuple[float | None, float | None, bool]] = asyncio.Queue()
 tracker: Tracker | None = None
@@ -84,7 +90,8 @@ async def send_to_robot(payload: dict) -> bool:
     if payload.get("type") == "emotion":
         current_emotion = payload.get("name", current_emotion)
     if robot_socket is None:
-        print("(no robot connected — command not sent)")
+        if payload.get("type") not in ("emotion", "asleep", "pan", "tilt", "glance", "stream", "mic", "volume"):
+            print("(no robot connected — command not sent)")
         return False
     await robot_socket.send(json.dumps(payload))
     return True
@@ -134,7 +141,9 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
         await websocket.close(1013)
         return
     robot_socket = websocket
-    print(f"robot connected! (fw {hello.get('fw', '?')}, {peer})")
+    global robot_aec
+    robot_aec = bool(hello.get("aec"))
+    print(f"robot connected! (fw {hello.get('fw', '?')}, {peer}{', echo cancellation' if robot_aec else ''})")
     pick_mic_source()
     if config.MIC_SOURCE in ("auto", "robot"):
         await send_to_robot({"type": "mic", "on": True})
@@ -175,6 +184,7 @@ async def handle_robot(websocket: websockets.ServerConnection) -> None:
         # new connection can arrive before the old one is noticed as dead.
         if robot_socket is websocket:
             robot_socket = None
+            robot_aec = False
             print("robot disconnected")
             pick_mic_source()
 
@@ -190,7 +200,9 @@ async def handle_console_line(line: str) -> bool:
 
     if cmd == "quit":
         return False
-    if cmd == "status":
+    if cmd == "stop":
+        stop_requested.set()
+    elif cmd == "status":
         print("robot connected" if robot_socket else "no robot connected")
     elif cmd == "emo":
         if arg in config.EMOTIONS:
@@ -211,7 +223,7 @@ async def handle_console_line(line: str) -> bool:
         if not arg:
             print("usage: ask <question>")
             return True
-        await converse(arg)
+        await converse(arg, interruptible=False)
     elif cmd == "listen":
         if ears is None:
             await start_listening()
@@ -370,6 +382,7 @@ class SpokenReply:
         self.cancel = threading.Event()
         self.spoken: list[str] = []
         self.pcm: list[bytes] = []
+        self.interrupted = False
 
     @property
     def text(self) -> str:
@@ -449,18 +462,32 @@ class SpokenReply:
         first = get.result()
         if first is None:
             return True  # nothing to say
-        if ears is not None:
+        global speaking_now
+        stop_requested.clear()
+        barge = interruptible and config.BARGE_IN and robot_socket is not None and robot_aec and ears is not None
+        stoppable = robot_socket is not None  # a Stop click works whatever the ears do
+        if ears is not None and not barge:
             ears.muted.set()
+        if barge:
+            # Residual echo is short; only a real sentence from the human counts.
+            self._old_cancel = config.CANCEL_MIN_SPEECH
+            config.CANCEL_MIN_SPEECH = config.BARGE_IN_MIN_SPEECH
+            ears.apply_config()
+        speaking_now = True
         try:
             if robot_socket is not None:
-                await self._play_robot(first)
+                await self._play_robot(first, barge=barge, stoppable=stoppable)
             else:
                 await self._play_mac(first)
         finally:
+            speaking_now = False
             if ears is not None:
                 ears.muted.clear()
+            if barge:
+                config.CANCEL_MIN_SPEECH = self._old_cancel
+                ears.apply_config()
         self.tl.mark("done")
-        return True
+        return not self.interrupted
 
     def _abort(self) -> None:
         self.cancel.set()
@@ -468,9 +495,16 @@ class SpokenReply:
         self.sentences.put(None)  # wake the voice thread so it can exit
         self.audio.put(None)
 
-    async def _play_robot(self, first: bytes) -> None:
-        """Stream PCM to the robot (docs/protocol.md) and wait until it has played."""
+    def _human_cut_in(self) -> bool:
+        return stop_requested.is_set() or (ears is not None and ears.talking)
+
+    async def _play_robot(self, first: bytes, barge: bool = False, stoppable: bool = False) -> None:
+        """Stream PCM to the robot (docs/protocol.md) and wait until it has
+        played. With `barge` (a body that cancels its own echo) the human can
+        cut in: the moment the ears hear a real sentence, playback stops and
+        the rest of the reply is dropped."""
         robot_speak_done.clear()
+        speech_started.clear()
         # bytes 0 = length unknown: the robot starts after 200 ms of buffer.
         await send_to_robot({"type": "speak_begin", "bytes": 0})
         self.tl.mark("speaking")
@@ -478,6 +512,9 @@ class SpokenReply:
         total = 0
         chunk: bytes | None = first
         while chunk is not None:
+            if (barge and self._human_cut_in()) or (stoppable and stop_requested.is_set()):
+                await self._cut_off()
+                return
             buf += chunk
             while len(buf) >= FRAME_BYTES:
                 if robot_socket is None:
@@ -490,10 +527,29 @@ class SpokenReply:
             await robot_socket.send(b"\x01" + bytes(buf))
             total += len(buf)
         await send_to_robot({"type": "speak_end"})
+        deadline = time.time() + total / 32000 + 5
+        while not robot_speak_done.is_set():
+            if (barge and self._human_cut_in()) or (stoppable and stop_requested.is_set()):
+                await self._cut_off()
+                return
+            if time.time() > deadline:
+                print("(robot never said it finished speaking)")
+                return
+            await asyncio.sleep(0.05)
+
+    async def _cut_off(self) -> None:
+        """The human started talking over him: stop the body, drop the rest."""
+        self.interrupted = True
+        print("  (stopped)" if stop_requested.is_set() else "  (you cut in — stopping)")
+        self.cancel.set()
+        self.sentences.put(None)
+        self.audio.put(None)
+        robot_speak_done.clear()
+        await send_to_robot({"type": "speak_stop"})
         try:
-            await asyncio.wait_for(robot_speak_done.wait(), timeout=total / 32000 + 5)
+            await asyncio.wait_for(robot_speak_done.wait(), timeout=2)
         except asyncio.TimeoutError:
-            print("(robot never said it finished speaking)")
+            pass
 
     async def _play_mac(self, first: bytes) -> None:
         """No robot: play each sentence on the Mac as soon as it's complete."""
@@ -512,7 +568,8 @@ class SpokenReply:
             await self.loop.run_in_executor(None, mouth.play, bytes(buf))
 
 
-async def converse(question: str, ended_at: float | None = None, heard_at: float | None = None) -> bool:
+async def converse(question: str, ended_at: float | None = None, heard_at: float | None = None,
+                   interruptible: bool = True) -> bool:
     """Ask the brain, show the face, and speak the answer as it forms.
     Returns False if the human started talking again before Rocky spoke
     (the reply was dropped and the question is still open)."""
@@ -528,33 +585,66 @@ async def converse(question: str, ended_at: float | None = None, heard_at: float
     if camera_wanted and jpeg is None:
         print("  (camera has no fresh frame — telling him he can't see right now)")
     reply = SpokenReply(loop, tl)
+    global current_reply
+    current_reply = reply
     reply.think_and_speak(question, jpeg, camera_wanted)
     global thinking
     thinking = True
     try:
-        finished = await reply.play()
+        # A typed question is never cancelled by room noise: only a spoken
+        # one can be "continued" by the human talking on.
+        finished = await reply.play(interruptible=interruptible)
     except Exception as e:  # a speaker hiccup shouldn't kill the server
         print(f"(could not speak: {e})")
         finished = True
     finally:
         thinking = False
+    if reply.interrupted:
+        # He was talking and you spoke over him: what you said next is a new
+        # question (the ears already have it); nothing to re-answer here.
+        awake_until = time.time() + config.AWAKE_SECONDS
+        if reply.text:
+            journal(question, reply.text + " [cut off]")
+        last_exchange.update(q=question, a=reply.text, at=time.time(), cut=True)
+        return True
     if not finished:
         print("  (you kept talking — Rocky will hear the rest and answer once)")
         await send_to_robot({"type": "emotion", "name": "neutral"})
         return False
     if reply.text:
         eyes.last_said = reply.text
+        journal(question, reply.text)
         if config.DEBUG_TTS_CHECK and reply.pcm:
             loop.run_in_executor(None, check_tts, reply.text, b"".join(reply.pcm))
+    last_exchange.update(q=question, a=reply.text, at=time.time(), cut=False)
     awake_until = time.time() + config.AWAKE_SECONDS
     tl.report()
     return True
+
+
+def journal(question: str, answer: str) -> None:
+    """One file a day of what was actually asked and said (never overheard
+    speech), the raw material for the nightly reflection into shared memory."""
+    try:
+        d = os.path.expanduser(config.JOURNAL_DIR)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, time.strftime("%Y-%m-%d") + ".md")
+        new = not os.path.exists(path)
+        with open(path, "a", encoding="utf-8") as f:
+            if new:
+                f.write(f"# {time.strftime('%Y-%m-%d')} — {config.ROBOT_NAME}'s day\n\n")
+            f.write(f"**{time.strftime('%H:%M')} {config.HUMAN_NAME}:** {question.strip()}\n\n")
+            f.write(f"**{config.ROBOT_NAME}:** {answer.strip()}\n\n")
+    except OSError as e:
+        print(f"(journal: {e})")
 
 
 async def say(text: str) -> bytes:
     """Speak a fixed line: through the robot's speaker when it's connected,
     else the Mac. Ears are muted meanwhile so Rocky doesn't hear himself."""
     reply = SpokenReply(asyncio.get_running_loop(), Timeline(time.time()))
+    global current_reply
+    current_reply = reply
     reply.speak_fixed(text)
     try:
         await reply.play(interruptible=False)
@@ -608,7 +698,11 @@ def console_state() -> dict:
         "level": ears.level if ears is not None else 0.0,
         "speech_prob": ears.speech_prob if ears is not None else 0.0,
         "hearing": ears.hearing if ears is not None else False,
-        "speaking": ears.muted.is_set() if ears is not None else False,
+        "speaking": speaking_now,
+        "saying": current_reply.text if (current_reply is not None and (speaking_now or thinking)) else "",
+        "body_aec": robot_aec,
+        "mic_frames": ears.frames if ears is not None else 0,
+        "addressed_last": __import__("brain.addressed", fromlist=["last"]).last,
         "thinking": thinking,
         "awake": now < awake_until,
         "awake_for": max(0.0, awake_until - now),
@@ -618,6 +712,8 @@ def console_state() -> dict:
         "tracking_enabled": tracker.enabled if tracker is not None else False,
         "volume": speaker_volume,
         "tuning": {k: getattr(config, k) for k in TUNABLE},
+        "settings": {k: getattr(config, k) for k in config.SETTINGS_KEYS},
+        "setting_ranges": {k: list(v) for k, v in {**TUNABLE, **VOICE_TUNABLE}.items()},
     }
 
 
@@ -675,12 +771,34 @@ async def _console_command(action: str, payload: dict) -> dict:
             awake_until = time.time() + config.AWAKE_SECONDS
             await send_to_robot({"type": "asleep", "on": False})
             await send_to_robot({"type": "emotion", "name": "neutral"})
+    elif action == "stop":
+        stop_requested.set()
+    elif action == "notify":
+        # A sub-agent (a Claude Code session in a terminal) reporting in via
+        # tools/subagent-hook: log it, show a face, say it out loud.
+        text = " ".join(str(payload.get("text", "")).split())[:300]
+        if not text:
+            raise ValueError("text required")
+        kind = str(payload.get("kind") or "info")
+        project = str(payload.get("project") or "")
+        try:
+            d = os.path.expanduser(config.JOURNAL_DIR)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "agents.log"), "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M')} [{kind}] {project}: {text}\n")
+        except OSError:
+            pass
+        print(f"sub-agent [{kind}] {project}: {text}")
+        emotion = "happy" if kind == "done" else "surprised"
+        await send_to_robot({"type": "asleep", "on": False})
+        await send_to_robot({"type": "emotion", "name": emotion})
+        asyncio.create_task(say(text))
     elif action in ("say", "ask"):
         text = str(payload.get("text", "")).strip()
         if not text or len(text) > 300:
             raise ValueError("text must be 1 to 300 characters")
         print(f"console: {action} {text}")
-        asyncio.create_task(say(text) if action == "say" else converse(text))
+        asyncio.create_task(say(text) if action == "say" else converse(text, interruptible=False))
     elif action == "tune":
         key = payload.get("key")
         if key not in TUNABLE:
@@ -689,7 +807,8 @@ async def _console_command(action: str, payload: dict) -> dict:
         setattr(config, key, value)
         if ears is not None:
             ears.apply_config()
-        print(f"console: {key} = {value:g} (until restart; set it in config.py to keep)")
+        config.save_setting(key, value)
+        print(f"console: {key} = {value:g}")
     elif action == "voice":
         # Speaker tuning; takes effect on the next reply.
         key = payload.get("key")
@@ -697,7 +816,22 @@ async def _console_command(action: str, payload: dict) -> dict:
             raise ValueError(f"voice settings: {', '.join(VOICE_TUNABLE)}")
         value = _number(payload, "value", *VOICE_TUNABLE[key])
         setattr(config, key, value)
-        print(f"console: {key} = {value:g} (until restart; set it in config.py to keep)")
+        config.save_setting(key, value)
+        print(f"console: {key} = {value:g}")
+    elif action == "setting":
+        # Anything else in config.SETTINGS_KEYS: saved now, applied on the
+        # next brain restart (model, personality, name, voice, sentence cap...).
+        key = payload.get("key")
+        if key not in config.SETTINGS_KEYS:
+            raise ValueError(f"settings: {', '.join(config.SETTINGS_KEYS)}")
+        value = payload.get("value")
+        kind = type(getattr(config, key))
+        try:
+            value = kind(value) if kind in (int, float, str) else bool(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} must be a {kind.__name__}")
+        config.save_setting(key, value)  # also sets config.<key> now; most are read fresh each turn
+        print(f"console: {key} = {value!r}")
     else:
         raise ValueError(f"no such control: {action}")
     return {}
@@ -835,6 +969,14 @@ async def _handle_heard(item: tuple[str, float, float, float]) -> None:
     if not woke and started_at >= awake_until:
         print(f"(heard, ignoring: {text})")
         return
+    if not woke:
+        # Awake, no name said: was that for him, or for someone else in the room?
+        ok, p = await asyncio.get_running_loop().run_in_executor(
+            None, _addressed, question, last_exchange["q"], last_exchange["a"],
+            time.time() - last_exchange["at"], last_exchange["cut"])
+        if not ok:
+            print(f"(heard, not for me (p={p:.2f}): {text})")
+            return
     print(f"{config.HUMAN_NAME}: {text}")
     eyes.last_heard = text
     awake_until = time.time() + config.AWAKE_SECONDS  # anything you say keeps him up
@@ -904,8 +1046,28 @@ async def console_loop() -> None:
             break
 
 
+def seed_memory() -> None:
+    """First run: give him a memory folder to read, from workspace/memory-template."""
+    import shutil
+    mem = os.path.expanduser(config.MEMORY_DIR)
+    tpl = os.path.join(os.path.expanduser(config.CLAUDE_WORKSPACE), "memory-template")
+    try:
+        os.makedirs(mem, exist_ok=True)
+        for name in ("Shared-Memory.md", "Profile.md", "Handoffs.md", "README.md"):
+            dst, src = os.path.join(mem, name), os.path.join(tpl, name)
+            if not os.path.exists(dst) and os.path.exists(src):
+                shutil.copy(src, dst)
+        link = os.path.join(os.path.expanduser(config.CLAUDE_WORKSPACE), "memory")
+        if not os.path.lexists(link) and os.path.realpath(mem) != os.path.realpath(link):
+            os.symlink(mem, link)   # CLAUDE.md imports @memory/...
+        os.makedirs(os.path.expanduser(config.NOTES_INBOX), exist_ok=True)
+    except OSError as e:
+        print(f"(memory folder: {e})")
+
+
 async def main() -> None:
-    print(f"{config.ROBOT_NAME} brain server — model {config.MODEL}")
+    seed_memory()
+    print(f"{config.ROBOT_NAME} brain server — brain {config.BRAIN} ({config.CLAUDE_MODEL if config.BRAIN == 'claude-code' else config.MODEL})")
     print(f"listening for the robot on ws://0.0.0.0:{config.PORT}")
     eyes.state_provider = console_state
     eyes.command_handler = console_command
@@ -916,7 +1078,11 @@ async def main() -> None:
     global tracker, brain, main_loop
     loop = asyncio.get_running_loop()
     main_loop = loop
-    brain = RobotBrain(ABILITIES)
+    if config.BRAIN == "claude-code":
+        from .claude_brain import ClaudeCodeBrain
+        brain = ClaudeCodeBrain()
+    else:
+        brain = RobotBrain(ABILITIES)
     tracker = Tracker(eyes, lambda p, t, on: loop.call_soon_threadsafe(head_moves.put_nowait, (p, t, on)))
     eyes.has_annotator = True
     tracker.start()
@@ -926,6 +1092,12 @@ async def main() -> None:
         voice_task = asyncio.create_task(voice_loop())
         doze_task = asyncio.create_task(doze_loop())
         head_task = asyncio.create_task(head_loop())
+        try:
+            from .vocabulary import stt_prompt
+            config.STT_PROMPT = stt_prompt()
+            print(f"speech hint: {config.STT_PROMPT[:120]}...")
+        except Exception as e:
+            print(f"(speech hint not built: {e})")
         if config.LISTEN_ON_START:
             await start_listening()
         try:
@@ -938,7 +1110,22 @@ async def main() -> None:
                 stop_listening()
 
 
+def _watch_parent() -> None:
+    """When the Mac app that launched us dies (even by SIGKILL), follow it:
+    an orphaned brain would keep the ports and the microphone."""
+    parent = os.environ.get("DESK_ROBOT_PARENT_PID")
+    if not parent:
+        return
+    def run() -> None:
+        while os.getppid() == int(parent):
+            time.sleep(1)
+        print("(parent app is gone; shutting down)")
+        os._exit(0)
+    threading.Thread(target=run, daemon=True).start()
+
+
 if __name__ == "__main__":
+    _watch_parent()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

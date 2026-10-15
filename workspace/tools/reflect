@@ -1,0 +1,19 @@
+#!/bin/zsh
+# Nightly reflection: read today's journal and add up to three lines worth
+# keeping to the shared memory. Run by launchd at 23:30; `tools/reflect --now`
+# runs it for today by hand, `tools/reflect 2026-10-13` for another day.
+set -e
+WS="$HOME/desk-robot/workspace"
+DAY="${1:-$(date +%F)}"; [[ "$DAY" == "--now" ]] && DAY=$(date +%F)
+J="$WS/journal/$DAY.md"
+[[ -f "$J" ]] || { echo "no journal for $DAY"; exit 0; }
+export PATH="$HOME/.nvm/versions/node/v24.2.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+CLAUDE=$(command -v claude || ls $HOME/.nvm/versions/node/*/bin/claude | tail -1)
+cd "$WS"
+MEM=$(grep "^MEMORY_DIR=" "$WS/../server/.env" 2>/dev/null | cut -d= -f2- | tr -d '"')
+MEM="${MEM:-$WS/memory}"; MEM="${MEM/#\~/$HOME}"
+PROMPT="Nightly reflection for $DAY. Read journal/$DAY.md (today's real exchanges between the human and the robot) and memory/Shared-Memory.md. Decide what from today is worth remembering for weeks: a decision, a preference, a person, a promise, an open loop. Add at most three dated lines (- $DAY: ...) under the right headings of memory/Shared-Memory.md using Edit, each one specific and useful to an assistant later. Skip anything already there, anything trivial (weather, one-off lookups), and anything that is just a task (those live in Active Todos). If nothing qualifies, change nothing. Finish by printing the lines you added, or 'nothing to add'."
+# The prompt goes first: the tool lists are variadic and would swallow it.
+"$CLAUDE" -p "$PROMPT" --model sonnet --output-format text \
+  --allowedTools "Read" "Edit(memory/**)" "Edit(/$MEM/**)" \
+  --disallowedTools "Write" "Bash" "WebSearch" "WebFetch" < /dev/null

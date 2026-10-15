@@ -1,0 +1,39 @@
+name: DeskRobot
+options:
+  bundleIdPrefix: co.goodendeavors
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+targets:
+  DeskRobot:
+    type: application
+    platform: macOS
+    sources:
+      - DeskRobot
+    info:
+      path: DeskRobot/Info.plist
+      properties:
+        CFBundleDisplayName: Desk Robot
+        LSUIElement: true
+        NSMicrophoneUsageDescription: Desk Robot listens for its name and your questions. Speech is transcribed on this Mac.
+        NSCalendarsFullAccessUsageDescription: Desk Robot reads your calendar to tell you what's on when you ask.
+        NSRemindersFullAccessUsageDescription: Desk Robot adds reminders when you ask it to remind you of something.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSHumanReadableCopyright: ""
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.goodendeavors.deskrobot
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        SWIFT_EMIT_LOC_STRINGS: NO
