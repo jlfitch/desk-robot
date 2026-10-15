@@ -57,3 +57,7 @@ workspace/tools/sync-shared-memory.sh
 mac/build/
 mac/DeskRobot.xcodeproj/
 mac/*.xcworkspace
+
+# the private overlay repo that shares this working tree (see private/README.md on the author's machine)
+.git-private/
+private/
