@@ -126,7 +126,9 @@ enum SettingValue: Decodable {
         let c = try decoder.singleValueContainer()
         if let b = try? c.decode(Bool.self) { self = .bool(b) }
         else if let d = try? c.decode(Double.self) { self = .number(d) }
-        else { self = .string(try c.decode(String.self)) }
+        else if let s = try? c.decode(String.self) { self = .string(s) }
+        else if let list = try? c.decode([String].self) { self = .string(list.joined(separator: ", ")) }
+        else { self = .string("") }   // never let one odd value break the whole status
     }
 }
 

@@ -712,7 +712,7 @@ def console_state() -> dict:
         "tracking_enabled": tracker.enabled if tracker is not None else False,
         "volume": speaker_volume,
         "tuning": {k: getattr(config, k) for k in TUNABLE},
-        "settings": {k: getattr(config, k) for k in config.SETTINGS_KEYS},
+        "settings": {k: getattr(config, k) for k in config.SETTINGS_KEYS if not isinstance(getattr(config, k), list)},
         "setting_ranges": {k: list(v) for k, v in {**TUNABLE, **VOICE_TUNABLE}.items()},
     }
 
