@@ -57,7 +57,7 @@ def _claude_args() -> list[str]:
         "Read", "Glob", "Grep", "WebSearch", "WebFetch",
         "Bash(date:*)", "Bash(ls:*)", "Bash(cal:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)",
     ]
-    for tool in ["agenda", "agents", "code", "reflect"] + list(EXTRA_TOOLS):
+    for tool in ["agenda", "agents", "code", "reflect", "home"] + list(EXTRA_TOOLS):
         args += [f"Bash(tools/{tool}:*)", f"Bash({_WS}/tools/{tool}:*)"]
     # The only places he may write: memory, his notes inbox, and the vault folders above.
     for d in [MEMORY_DIR, NOTES_INBOX]:

@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Lights, scenes and anything else the Home app controls, through Shortcuts.
+
+macOS gives apps no direct HomeKit access, but the Shortcuts app does: a
+shortcut with a "Control Home" or "Set Scene" action, synced from the
+phone through iCloud, runs from here with `shortcuts run`.
+
+    tools/home list                   shortcuts whose names start with "Home:" (the home controls)
+    tools/home list --all             every shortcut on this Mac
+    tools/home run "Home: Lights Off" run one (exact name, or a unique part of it)
+    tools/home run "Home: Lights" --input "off"   pass text into a shortcut that takes input
+Runs immediately: these are physical, reversible actions, no --yes needed.
+"""
+import subprocess, sys
+
+
+def names():
+    out = subprocess.run(["shortcuts", "list"], capture_output=True, text=True, timeout=20).stdout
+    return [l.strip() for l in out.splitlines() if l.strip()]
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        print(__doc__); return 2
+    if a[0] == "list":
+        all_ = "--all" in a
+        found = [n for n in names() if all_ or n.lower().startswith("home:")]
+        if not found:
+            print("No shortcuts named \"Home: …\" yet. Make one in the Shortcuts app with a Control Home action and name it like \"Home: Office Lights Off\"." if not all_ else "No shortcuts.")
+            return 0
+        for n in found:
+            print("- " + n)
+        return 0
+    if a[0] == "run":
+        if len(a) < 2:
+            print("Which shortcut? tools/home list"); return 2
+        want = a[1].lower()
+        text = None
+        if "--input" in a:
+            i = a.index("--input"); text = a[i + 1] if i + 1 < len(a) else ""
+        all_names = names()
+        exact = [n for n in all_names if n.lower() == want]
+        hits = exact or [n for n in all_names if want in n.lower()]
+        if not hits:
+            print(f"No shortcut matching '{a[1]}'. tools/home list shows them."); return 2
+        if len(hits) > 1:
+            print("Several match: " + "; ".join(hits) + ". Say which."); return 2
+        cmd = ["shortcuts", "run", hits[0]]
+        if text is not None:
+            cmd += ["-i", "-"]
+        r = subprocess.run(cmd, input=text, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            print(f"\"{hits[0]}\" failed: {(r.stderr or r.stdout).strip()[-300:] or 'no details'}"); return 1
+        out = r.stdout.strip()
+        print(f"Ran \"{hits[0]}\"." + (f" It said: {out[:200]}" if out else ""))
+        return 0
+    print(__doc__); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

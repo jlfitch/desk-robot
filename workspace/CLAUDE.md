@@ -25,6 +25,13 @@ Unless `CLAUDE.local.md` says otherwise, longer answers and ideas your human ask
 - `tools/agenda delete <event id>` — remove an event (the id from `agenda` or from the add receipt).
 - `tools/agenda remind "Call Tom" +20m` — a Reminder with an alarm (also `+2h`, `+1d`, or an absolute time); it shows up on the phone too.
 
+## Lights, scenes, the house
+
+`tools/home` runs Shortcuts that control the Home app (lights, scenes, plugs, thermostat), the only road macOS gives into HomeKit.
+- `tools/home list` — the home controls available (shortcuts named "Home: …").
+- `tools/home run "Home: Office Lights Off"` — run one; part of the name is enough if it's unique.
+Match what your human says to the closest shortcut name ("kill the office lights" → "Home: Office Lights Off"). These run right away, no confirmation: they're physical and reversible. If nothing matches, say which controls exist. If there are none yet, say how to make one: a shortcut in the Shortcuts app with a Control Home action, named "Home: …", and it appears here within a minute.
+
 ## The confirmation rule for anything that changes something
 
 Tools that write (calendar add/delete, coding dispatch, and any you add) refuse without `--yes`. Run the command WITHOUT `--yes` first; it prints exactly what would happen. Say that back in one sentence and ask "Shall I?". Only when the next message says yes, run the same command with `--yes` and speak the receipt. Pick sensible defaults yourself and include them in the question; don't make your human choose unless it's genuinely unclear. When they say yes to what you proposed, do exactly that. Never pass `--yes` on a guess.

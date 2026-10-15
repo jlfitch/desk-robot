@@ -22,6 +22,7 @@ A small animated robot that lives in the corner of your screen, listens for its 
 - **Calendar and reminders** across every account in Calendar.app (iCloud, Google, work), via Apple's own calendar store. Add, delete, "remind me in twenty minutes".
 - **Notes.** Long answers and ideas go to a notes folder; with a vault configured, into the folders you allow.
 - **Your Claude Code sessions are its sub-agents.** A hook tells it when any session finishes a turn or needs you; it announces the gist. "Start a coding agent in myproject to…" starts a background session, confirms first, and reports back. Small squares on the face show sessions at work.
+- **Lights and scenes.** macOS has no direct HomeKit access, so the robot runs Shortcuts: make one with a Control Home action, name it "Home: Office Lights Off", and "hey Rocky, kill the office lights" works.
 - **Everything that changes something asks first.** Tools refuse without `--yes`; the robot says what it would do and waits for your yes.
 - **Settings window** for listening, voice, model, character, face style and color.
 
