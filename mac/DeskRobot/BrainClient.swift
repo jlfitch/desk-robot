@@ -28,8 +28,8 @@ final class BrainClient {
 
     init() {
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 1.5
-        cfg.timeoutIntervalForResource = 3
+        cfg.timeoutIntervalForRequest = 4
+        cfg.timeoutIntervalForResource = 6
         session = URLSession(configuration: cfg)
     }
 

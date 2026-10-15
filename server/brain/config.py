@@ -93,6 +93,10 @@ BARGE_IN_MIN_SPEECH = 0.6         # seconds of your speech that stops him mid-se
 # robot, or to someone else in the room?" (TypeSafe Jev; TYPESAFE_API_KEY in .env).
 ADDRESSED_CHECK = True
 ADDRESSED_THRESHOLD = 0.5         # probability below which he stays quiet
+# Sub-agent reports (the Claude Code hook). A turn shorter than this is a chat
+# reply, not a task: it is logged but not announced. Attention requests are always spoken.
+ANNOUNCE_AGENTS = True
+AGENT_MIN_TURN_SECONDS = 45
 CLAUDE_RECYCLE_TURNS = 80         # start a fresh conversation after this many turns...
 CLAUDE_RECYCLE_SECONDS = 8 * 3600 # ...or this long, so context never bloats
 
@@ -287,7 +291,7 @@ SETTINGS_KEYS = [
     "NOTE_LONG_REPLIES", "TTS_FALLBACK_VOICE", "TTS_LEVEL", "TTS_HIGHPASS_HZ", "TTS_PRESENCE_DB",
     "VAD_THRESHOLD", "TURN_THRESHOLD", "TURN_MAX_SILENCE", "TURN_PAUSE_SECONDS", "AWAKE_SECONDS",
     "LISTEN_ON_START", "STT_MODEL", "BARGE_IN", "BARGE_IN_MIN_SPEECH", "ADDRESSED_CHECK", "ADDRESSED_THRESHOLD",
-    "EXTRA_TOOLS", "VOCABULARY",
+    "EXTRA_TOOLS", "VOCABULARY", "ANNOUNCE_AGENTS", "AGENT_MIN_TURN_SECONDS",
 ]
 
 

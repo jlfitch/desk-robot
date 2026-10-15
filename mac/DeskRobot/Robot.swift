@@ -101,17 +101,26 @@ final class Robot: ObservableObject {
         brain.stop()
     }
 
+    private var missedPolls = 0
+
     private func apply(_ st: BrainStatus?) {
-        status = st
-        let wasConnected = connected
-        connected = st != nil
+        // The brain's status call can stall for a second or two while it is
+        // transcribing; one miss is not a lost brain. Only several in a row count.
         guard let st else {
-            if wasConnected { face.setAsleep(true) }
-            face.setTalking(false)
-            face.hearing = false
-            updateClickThrough()
+            missedPolls += 1
+            if missedPolls >= 6 && connected {
+                connected = false
+                status = nil
+                face.setTalking(false)
+                face.hearing = false
+                updateClickThrough()
+            }
             return
         }
+        missedPolls = 0
+        status = st
+        let wasConnected = connected
+        connected = true
         if !wasConnected { face.setAsleep(!(st.awake ?? false)) }
         if let e = st.emotion, e != lastEmotion, let em = Emotion(rawValue: e) {
             lastEmotion = e

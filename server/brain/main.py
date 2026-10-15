@@ -788,7 +788,15 @@ async def _console_command(action: str, payload: dict) -> dict:
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M')} [{kind}] {project}: {text}\n")
         except OSError:
             pass
-        print(f"sub-agent [{kind}] {project}: {text}")
+        secs = float(payload.get("turn_seconds") or 0)
+        # A "done" with an unknown duration is treated as a short chat turn: silence beats spam.
+        quiet = (not config.ANNOUNCE_AGENTS) or (kind == "done" and secs < config.AGENT_MIN_TURN_SECONDS)
+        print(f"sub-agent [{kind}] {project} ({secs:.0f}s){' (quiet)' if quiet else ''}: {text}")
+        if quiet:
+            return {}
+        # Wake for a moment so a follow-up ("what did it say?") needs no wake word,
+        # and so the face and the status agree about being awake.
+        awake_until = max(awake_until, time.time() + 20)
         emotion = "happy" if kind == "done" else "surprised"
         await send_to_robot({"type": "asleep", "on": False})
         await send_to_robot({"type": "emotion", "name": emotion})

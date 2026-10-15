@@ -15,7 +15,7 @@ struct SettingsView: View {
     @State private var note = ""
 
     private let liveKeys: Set<String> = ["VAD_THRESHOLD", "TURN_THRESHOLD", "TURN_MAX_SILENCE", "AWAKE_SECONDS", "TTS_LEVEL", "TTS_HIGHPASS_HZ", "TTS_PRESENCE_DB"]
-    private let instantKeys: Set<String> = ["BARGE_IN", "BARGE_IN_MIN_SPEECH", "ADDRESSED_CHECK", "ADDRESSED_THRESHOLD"]
+    private let instantKeys: Set<String> = ["BARGE_IN", "BARGE_IN_MIN_SPEECH", "ADDRESSED_CHECK", "ADDRESSED_THRESHOLD", "ANNOUNCE_AGENTS", "AGENT_MIN_TURN_SECONDS"]
     private let voiceKeys: Set<String> = ["TTS_LEVEL", "TTS_HIGHPASS_HZ", "TTS_PRESENCE_DB"]
 
     var body: some View {
@@ -50,6 +50,8 @@ struct SettingsView: View {
                 Stepper("Spoken sentences per reply: \(Int(values["REPLY_MAX_SENTENCES"] ?? 4))", value: intBinding("REPLY_MAX_SENTENCES"), in: 1...12)
                 Toggle("Write long answers into a fleeting note", isOn: boolBinding("NOTE_LONG_REPLIES"))
                 Toggle("Listen on start", isOn: boolBinding("LISTEN_ON_START"))
+                Toggle("Announce when coding sessions finish", isOn: boolBinding("ANNOUNCE_AGENTS"))
+                Stepper("Only turns longer than \(Int(values["AGENT_MIN_TURN_SECONDS"] ?? 45)) s", value: intBinding("AGENT_MIN_TURN_SECONDS"), in: 0...600, step: 15)
                 HStack {
                     if needsRestart { Text("Changes above apply after a restart.").foregroundStyle(.secondary).font(.caption) }
                     Spacer()

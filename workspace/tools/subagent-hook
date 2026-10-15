@@ -13,6 +13,39 @@ ROCKY_WS = os.path.join(HOME, "desk-robot", "workspace")
 SKIP_CWDS = {ROCKY_WS, os.path.join(HOME, "desk-robot")}   # Rocky's own brain is not a sub-agent
 
 
+def turn_seconds(transcript_path: str) -> float:
+    """How long the session's last turn took: last user message to last assistant message."""
+    try:
+        size = os.path.getsize(transcript_path)
+        with open(transcript_path, "rb") as f:
+            f.seek(max(0, size - 400_000))
+            chunk = f.read().decode("utf-8", "replace")
+        import datetime
+        last_user = last_asst = None
+        lines = chunk.split("\n")
+        for line in (lines[1:] if size > 400_000 else lines):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            ts = d.get("timestamp")
+            if not ts:
+                continue
+            t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if d.get("type") == "user":
+                c = (d.get("message") or {}).get("content")
+                if isinstance(c, list) and c and isinstance(c[0], dict) and c[0].get("type") == "tool_result":
+                    continue   # tool results are not the human talking
+                last_user = t
+            elif d.get("type") == "assistant":
+                last_asst = t
+        if last_user and last_asst and last_asst > last_user:
+            return (last_asst - last_user).total_seconds()
+    except Exception:
+        pass
+    return 0.0
+
+
 def gist(transcript_path: str) -> str:
     """First sentence of the session's last assistant message, short."""
     try:
@@ -21,7 +54,8 @@ def gist(transcript_path: str) -> str:
             f.seek(max(0, size - 400_000))
             chunk = f.read().decode("utf-8", "replace")
         last = ""
-        for line in chunk.split("\n")[1:]:
+        lines = chunk.split("\n")
+        for line in (lines[1:] if size > 400_000 else lines):
             try:
                 d = json.loads(line)
             except Exception:
@@ -67,6 +101,7 @@ def main() -> None:
             return
         g = gist(payload.get("transcript_path") or "")
         kind = "done"
+        secs = turn_seconds(payload.get("transcript_path") or "")
         text = f"The {project} agent is done." + (f" It says: {g}" if g else "")
     elif event == "Notification":
         ntype = payload.get("notification_type") or ""
@@ -80,7 +115,8 @@ def main() -> None:
             text = f"The {project} agent says: {msg[:160]}" if msg else f"The {project} agent needs you."
     else:
         return
-    body = json.dumps({"text": text, "kind": kind, "project": project, "session": (payload.get("session_id") or "")[:8]}).encode()
+    body = json.dumps({"text": text, "kind": kind, "project": project, "session": (payload.get("session_id") or "")[:8],
+                       "turn_seconds": round(locals().get("secs", 0.0))}).encode()
     req = urllib.request.Request("http://127.0.0.1:8766/api/notify", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("X-Rocky-Console", "1")
